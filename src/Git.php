@@ -2,10 +2,6 @@
 
 namespace Pub\Git;
 
-// TODO: Upgrade to late static bindings
-// TODO: Make a link to create repo for GitRepo
-// TODO: Convert to camelcase method names
-
 /**
  * Git Interface Class
  *
@@ -16,6 +12,7 @@ namespace Pub\Git;
  */
 class Git {
 
+
     /**
      * Git executable location
      *
@@ -24,26 +21,32 @@ class Git {
     protected static $bin = '/usr/bin/git';
 
     /**
-     * Sets git executable path
+     * Constructing this class is not allowed
+     */
+    private function __construct() {
+    }
+
+    /**
+     * Sets git executable path.
      *
      * @param string $path executable location
      */
-    public static function set_bin($path) {
-        self::$bin = $path;
+    public static function setBin($path) {
+        static::$bin = $path;
     }
 
     /**
      * Gets git executable path
      */
-    public static function get_bin() {
-        return self::$bin;
+    public static function getBin() {
+        return static::$bin;
     }
 
     /**
      * Sets up library for use in a default Windows environment
      */
-    public static function windows_mode() {
-        self::set_bin('git');
+    public static function windowsMode() {
+        static::setBin('git');
     }
 
     /**
@@ -56,7 +59,7 @@ class Git {
      *
      * @return  GitRepo
      */
-    public static function &create($repo_path, $source = null) {
+    public static function create($repo_path, $source = null) {
         return GitRepo::create_new($repo_path, $source);
     }
 
@@ -64,8 +67,6 @@ class Git {
      * Open an existing git repository
      *
      * Accepts a repository path
-     *
-     * @access  public
      *
      * @param   string $repo_path repository path
      *
@@ -81,15 +82,13 @@ class Git {
      *
      * Accepts a creation path and a remote to clone from
      *
-     * @access  public
-     *
      * @param   string $repo_path repository path
      * @param   string $remote remote source
      * @param   string $reference reference path
      *
      * @return  GitRepo
      **/
-    public static function &clone_remote($repo_path, $remote, $reference = null) {
+    public static function cloneRemote($repo_path, $remote, $reference = null) {
         return GitRepo::create_new($repo_path, $remote, true, $reference);
     }
 
@@ -104,8 +103,12 @@ class Git {
      *
      * @return  bool
      */
-    public static function is_repo($var) {
-        return (get_class($var) == 'GitRepo');
+    public static function isRepo($var) {
+        return is_object($var) && $var instanceof GitRepo;
     }
 
+}
+
+if (DIRECTORY_SEPARATOR === '\\') {
+    Git::windowsMode();
 }
