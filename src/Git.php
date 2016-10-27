@@ -52,15 +52,13 @@ class Git {
     /**
      * Create a new git repository
      *
-     * Accepts a creation path, and, optionally, a source path
+     * @param string $repoPath Repository creation path
      *
-     * @param   string $repo_path repository path
-     * @param   string $source directory to source
-     *
-     * @return  GitRepo
+     * @return GitRepo
+     * @throws GitException In case of a git error
      */
-    public static function create($repo_path, $source = null) {
-        return GitRepo::create_new($repo_path, $source);
+    public static function create($repoPath) {
+        return new GitRepo($repoPath, true);
     }
 
     /**
@@ -68,28 +66,31 @@ class Git {
      *
      * Accepts a repository path
      *
-     * @param   string $repo_path repository path
+     * @param   string $repoPath repository path
      *
      * @return  GitRepo
+     * @throws GitException In case of a git error
      */
-    public static function open($repo_path) {
-        return new GitRepo($repo_path);
+    public static function open($repoPath) {
+        return new GitRepo($repoPath);
     }
 
     /**
-     * Clones a remote repo into a directory and then returns a GitRepo object
+     * Clones a repo into a directory and then returns a GitRepo object
      * for the newly created local repo
      *
-     * Accepts a creation path and a remote to clone from
-     *
-     * @param   string $repo_path repository path
-     * @param   string $remote remote source
-     * @param   string $reference reference path
+     * @param   string $repoPath Repository path
+     * @param   string $remote Remote repository
      *
      * @return  GitRepo
-     **/
-    public static function cloneRemote($repo_path, $remote, $reference = null) {
-        return GitRepo::create_new($repo_path, $remote, true, $reference);
+     * @throws GitException In case of a git error
+     */
+    public static function cloneRepository(string $repoPath, string $remote) {
+        $repo = static::create($repoPath);
+
+        $repo->cloneRemote($remote);
+
+        return $repo;
     }
 
     /**
@@ -109,6 +110,7 @@ class Git {
 
 }
 
+// Use windows mode if detected
 if (DIRECTORY_SEPARATOR === '\\') {
     Git::windowsMode();
 }

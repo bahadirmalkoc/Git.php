@@ -76,10 +76,8 @@ class GitRepo {
      *
      * @throws GitException When the given path is not a repository or cannot create a repository in the directory
      */
-    public function __construct($repoPath = null, $createNew = false) {
-        if (is_string($repoPath)) {
-            $this->setRepoPath($repoPath, $createNew);
-        }
+    public function __construct(string $repoPath, bool $createNew = false) {
+        $this->setRepoPath($repoPath, $createNew);
     }
 
     /**
@@ -327,13 +325,12 @@ class GitRepo {
      * Runs a `git clone` call to clone a remote repository
      * into the current repository
      *
-     * @param   string $source source url
-     * @param   string $reference reference path
+     * @param   string $remote reference path
      *
      * @return  string
      */
-    public function cloneRemote($source, $reference) {
-        return $this->run("clone $reference $source " . $this->repoPath);
+    public function cloneRemote($remote) {
+        return $this->run("clone $remote " . $this->repoPath);
     }
 
     /**
@@ -565,7 +562,7 @@ class GitRepo {
      *
      * @param string $key Key for the environment variable
      * @param string $value Value for the environment variable
-     * 
+     *
      */
     public function setEnv($key, $value) {
         $this->envOpts[$key] = $value;
