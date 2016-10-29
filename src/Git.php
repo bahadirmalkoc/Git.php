@@ -4,10 +4,15 @@ namespace Pub\Git;
 
 use InvalidArgumentException;
 use Pub\Git\GitException as Exception;
+use Pub\Git\GitProcessException as ProcessException;
+use Symfony\Component\Process\Exception\RuntimeException;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\ProcessBuilder;
+use Symfony\Component\Process\ProcessUtils;
 
 // TODO: Add remove tag
+// TODO: Make an addAll command
+// TODO: Add remote
 
 /**
  * Git Interface Class
@@ -37,6 +42,11 @@ class Git {
     private $bare = false;
 
     /**
+     * @var int
+     */
+    private $timeout;
+
+    /**
      * @var array
      */
     private $envOpts = array();
@@ -45,6 +55,11 @@ class Git {
      * @var ProcessBuilder
      */
     private $processBuilder;
+
+    /**
+     * @var bool
+     */
+    private $gracefulFail = true;
 
 
     /**
@@ -59,7 +74,7 @@ class Git {
     /**
      * Gets git executable path
      */
-    public static function getBin() {
+    public static function getBin():string {
         return static::$bin;
     }
 
@@ -90,7 +105,7 @@ class Git {
      * @return Git
      * @throws GitException In case of a git error
      */
-    public static function cloneRepository(string $repoPath, string $remote) {
+    public static function cloneRepository(string $repoPath, string $remote):Git {
         $repo = new static($repoPath, true);
 
         $repo->cloneRemote($remote);
@@ -101,19 +116,25 @@ class Git {
     /**
      * Opens/creates a git repository. Also searches binary.
      *
-     * @param   string $repoPath Repository path
-     * @param   bool   $create Create directory and initiate it if not exists?
+     * @param string $repoPath Repository path
+     * @param bool   $create Create directory and initiate it if not exists?
+     * @param int    $timeout Timeout in seconds of a git process, or null to disable
      *
      * @throws GitException When the given path is not a repository or cannot create a repository in the directory
      */
-    public function __construct(string $repoPath, bool $create = false) {
+    public function __construct(string $repoPath, bool $create = false, int $timeout = null) {
         if (!static::$bin) {
             static::findBin();
         }
 
         $this->processBuilder = new ProcessBuilder();
         $this->processBuilder->setPrefix(static::getBin());
-        
+        $this->processBuilder->inheritEnvironmentVariables();
+        $this->processBuilder->setWorkingDirectory($repoPath);
+        if ($timeout !== null) {
+            $this->setTimeout($timeout);
+        }
+
         $this->setRepoPath($repoPath, $create);
     }
 
@@ -127,7 +148,7 @@ class Git {
      *
      * @throws GitException When the given path is not a repository or cannot create a repository in the directory
      */
-    private function setRepoPath(string $repoPath, $createNew = false) {
+    private function setRepoPath(string $repoPath, bool $createNew = false) {
         if ($newPath = realpath($repoPath)) {
             $repoPath = $newPath;
             if (is_dir($repoPath)) {
@@ -189,77 +210,106 @@ class Git {
     /**
      * Get the path to the git repo directory (eg. the ".git" directory)
      *
-     * @access public
      * @return string
      */
-    public function gitDirectoryPath() {
+    public function getGitDirectoryPath():string {
         return ($this->bare) ? $this->repoPath : $this->repoPath . "/.git";
     }
 
     /**
-     * Run a command in the git repository
+     * Get timeout of a git process in seconds
      *
-     * Accepts a shell command to run
+     * @return int
+     */
+    public function getTimeout(): int {
+        return $this->timeout;
+    }
+
+    /**
+     * Sets the timeout of a git process in seconds
      *
-     * @param   string $command Command to run
+     * @param int $timeout
+     */
+    public function setTimeout(int $timeout) {
+        $this->processBuilder->setTimeout($timeout);
+        $this->timeout = $timeout;
+    }
+
+    /**
+     * Set if the git commands should gracefully fail. If this setting is on, the commands will not only fail with
+     * a non zero error code but also the STDERR should also not be empty. However if both STDERR and STDOUT is empty
+     * then it is again a fatal error. By default this is on.
+     *
+     * @param boolean $gracefulFail
+     */
+    public function setGracefulFail(bool $gracefulFail) {
+        $this->gracefulFail = $gracefulFail;
+    }
+
+    /**
+     * Check if the git commands should gracefully fail. If this setting is off, the commands will fail only with
+     * a non zero error code. By the default setting is on.
+     *
+     * @return boolean
+     */
+    public function isGracefulFail(): bool {
+        return $this->gracefulFail;
+    }
+
+    /**
+     * Run a command
+     *
+     * @param array $arguments Arguments to pass to the process
      *
      * @return string
-     * @throws GitException
+     * @throws GitException When a git command is failed
+     * @throws GitProcessException When a git process is failed to be started
      */
-    protected function runCommand($command) {
-        $descriptorspec = array(
-            1 => array('pipe', 'w'),
-            2 => array('pipe', 'w'),
-        );
-        $pipes          = array();
-        /* Depending on the value of variables_order, $_ENV may be empty.
-         * In that case, we have to explicitly set the new variables with
-         * putenv, and call proc_open with env=null to inherit the reset
-         * of the system.
-         *
-         * This is kind of crappy because we cannot easily restore just those
-         * variables afterwards.
-         *
-         * If $_ENV is not empty, then we can just copy it and be done with it.
-         */
-        if (count($_ENV) === 0) {
-            $env = null;
-            foreach ($this->envOpts as $k => $v) {
-                putenv(sprintf("%s=%s", $k, $v));
+    protected function runCommand(array $arguments):string {
+        $this->processBuilder->setArguments($arguments);
+        $process = $this->processBuilder->getProcess();
+        try {
+            $process->run();
+        } catch (RuntimeException $e) {
+            throw new ProcessException($e->getMessage(), $e->getCode(), $e);
+        }
+
+        if ($process->isSuccessful()) {
+            return $process->getOutput();
+        }
+
+        $stdErr = $process->getErrorOutput();
+        if ($this->isGracefulFail()) {
+            $stdOut = $process->getOutput();
+
+            if (!$stdErr && !$stdOut) {
+                throw new GitException('No output returned from git command', 1500);
+            } else if (!$stdErr) {
+                return $stdOut;
             }
-        } else {
-            $env = array_merge($_ENV, $this->envOpts);
-        }
-        $cwd      = $this->repoPath;
-        $resource = proc_open($command, $descriptorspec, $pipes, $cwd, $env);
-
-        $stdout = stream_get_contents($pipes[1]);
-        $stderr = stream_get_contents($pipes[2]);
-        foreach ($pipes as $pipe) {
-            fclose($pipe);
         }
 
-        $status = trim(proc_close($resource));
-        if ($status) {
-            throw new Exception($stderr);
-        }
 
-        return $stdout;
+        throw new GitException($stdErr, $process->getExitCode());
     }
 
     /**
      * Run a git command in the git repository
      *
-     * Accepts a git command to run
+     * @param string $command Command to run
+     * @param array  $arguments Additional arguments (in order) to include with the command
      *
-     * @access  public
-     *
-     * @param   string $command Command to run
-     *
-     * @return  string
+     * @return string The command output
+     * @throws GitException If the git command fails. The error message from git (from STDERR) is relayed with
+     *     exception if available.
+     * @throws GitProcessException If the git process fails.
      */
-    public function run($command) {
-        return $this->runCommand(Git::getBin() . ' ' . $command);
+    public function run(string $command, array $arguments = []):string {
+        $pass = array_merge([
+            trim($command)
+        ], $arguments);
+
+        return $this->runCommand($pass);
     }
 
     /**
@@ -267,71 +317,121 @@ class Git {
      *
      * @param bool $excludeUntracked Excludes untracked files on status
      *
-     * @return string
+     * @return string Returns the command output
      */
-    public function status($excludeUntracked = false) {
-        $untrackedString = '';
+    public function status($excludeUntracked = false):string {
+        $arguments = [];
         if ($excludeUntracked) {
-            $untrackedString = ' -uno';
+            $arguments[] = ' -uno';
         }
 
-        return $this->run('status' . $untrackedString);
+        return $this->run('status', $arguments);
     }
 
     /**
      * Runs a `git add` call
      *
-     * @param   array|string $files Files to add.
+     * @param array|string $files Files to add. If you want to specify more than one `pathspec`, use the array format.
+     * @param bool         $verbose Verbose command (--verbose)
+     * @param bool         $force Allow adding otherwise ignored files. (--force)
+     * @param bool         $test Don't actually add the file(s), just show if they exist and/or will be ignored.
+     *     (--dry-run)
      *
-     * @return  string
+     * @return string Returns the command output
      */
-    public function add($files = '*') {
-        if (is_array($files)) {
-            $files = '"' . implode('" "', $files) . '"';
-        } else if (is_string($files)) {
+    public function add($files = '*', bool $verbose = true, bool $force = false, bool $test = false):string {
+        $arguments = [];
+        if ($verbose) {
+            $arguments[] = '--verbose';
+        }
+        if ($force) {
+            $arguments[] = '--force';
+        }
+        if ($test) {
+            $arguments[] = '--dry-run';
+        }
 
+        if (is_array($files)) {
+            $arguments = array_merge($arguments, $files);
+        } else if (is_string($files)) {
+            $arguments[] = $files;
         } else {
             throw new InvalidArgumentException(sprintf('Expecting array or string, found %s', gettype($files)));
         }
 
-        return $this->run("add $files -v");
+        return $this->run('add', $arguments);
     }
 
     /**
      * Runs a `git rm` call
      *
-     * Accepts a list of files to remove
+     * @param array|string $files Files to remove. If you want to specify more than one `pathspec`, use the array
+     *     format.
+     * @param bool         $cached Use this option to unstage and remove paths only from the index. Working tree files,
+     *     whether modified or not, will be left alone. (--cached)
+     * @param bool         $force Override the up-to-date check. (--force)
+     * @param bool         $verbose Normally outputs one line (in the form of an rm command) for each file removed.
+     *     Making this false, suppresses that output.
+     * @param bool         $test Don’t actually remove any file(s). Instead, just show if they exist in the index and
+     *     would otherwise be removed by the command. (--dry-run)
      *
-     * @param array|string $files Files to remove
-     * @param bool         $cached Use the --cached flag?
-     *
-     * @return string
+     * @return string Returns the command output
      */
-    public function rm($files = "*", $cached = false) {
-        if (is_array($files)) {
-            $files = '"' . implode('" "', $files) . '"';
-        } else if (is_string($files)) {
+    public function rm($files = "*", bool $cached = false, bool $force = false, bool $verbose = true, bool $test = false):string {
+        $arguments = [];
+        if ($cached) {
+            $arguments[] = '--cached';
+        }
+        if ($force) {
+            $arguments[] = '--force';
+        }
+        if ($verbose) {
+            $arguments[] = '--quite';
+        }
+        if ($test) {
+            $arguments[] = '--dry-run';
+        }
 
+        if (is_array($files)) {
+            $arguments = array_merge($arguments, $files);
+        } else if (is_string($files)) {
+            $arguments[] = $files;
         } else {
             throw new InvalidArgumentException(sprintf('Expecting array or string, found %s', gettype($files)));
         }
 
-        return $this->run("rm " . ($cached ? '--cached ' : '') . $files);
+        return $this->run('rm', $arguments);
     }
-
 
     /**
      * Runs a `git commit` call
      *
-     * @param   string  $message Commit message
-     * @param   boolean $commitAll Should all files be committed automatically (-a flag)
+     * @param string $message Commit message (--message)
+     * @param bool   $all Tell the command to automatically stage files that have been modified and deleted, but new
+     *     files you have not told Git about are not affected. (--all)
+     * @param bool   $verbose Show unified diff between the HEAD commit and what would be committed at the bottom of
+     *     the commit message template to help the user describe the commit by reminding what changes the commit has.
+     *     (--verbose)
+     * @param bool   $test Do not create a commit, but show a list of paths that are to be committed, paths with local
+     *     changes that will be left uncommitted and paths that are untracked. (--dry-run)
      *
-     * @return  string
+     * @return string Returns the command output
      */
-    public function commit($message = '', $commitAll = true) {
-        $flags = $commitAll ? '-av' : '-v';
+    public function commit(string $message, bool $all = true, bool $verbose = true, bool $test = false):string {
+        $arguments = [];
+        if ($all) {
+            $arguments[] = '--all';
+        }
+        if ($verbose) {
+            $arguments[] = '--verbose';
+        }
+        if ($test) {
+            $arguments[] = '--dry-run';
+        }
 
-        return $this->run("commit " . $flags . " -m " . escapeshellarg($message));
+        $arguments[] = '--message=\'' . $message . '\'';
+
+        return $this->run('commit', $arguments);
     }
 
     /**
@@ -339,47 +439,86 @@ class Git {
      * into a different directory
      *
      * @param string $target Target directory
+     * @param bool   $bare Make a bare Git repository. (--bare)
      *
-     * @return string
+     * @return string Returns the command output
      */
-    public function cloneTo($target) {
-        return $this->run("clone --local " . $this->repoPath . " $target");
+    public function cloneTo(string $target, bool $bare = false):string {
+        $arguments   = [];
+        $arguments[] = '--local';
+        if ($bare) {
+            $arguments[] = '--bare';
+        }
+        $arguments[] = $this->repoPath;
+        $arguments[] = $target;
+
+        return $this->run('clone', $arguments);
     }
 
     /**
-     * Runs a `git clone` call to clone a different repository
+     * Runs a `git clone` call to clone a different local repository
      * into the current repository
      *
-     * @param   string $source source directory
+     * @param string $source Source directory that will be cloned in to the current repository
+     * @param bool   $bare Make a bare Git repository. (--bare)
      *
-     * @return  string
+     * @return  string Returns the command output
      */
-    public function cloneFrom($source) {
-        return $this->run("clone --local $source " . $this->repoPath);
+    public function cloneFrom(string $source, bool $bare = false):string {
+        $arguments   = [];
+        $arguments[] = '--local';
+        if ($bare) {
+            $arguments[] = '--bare';
+        }
+        $arguments[] = $source;
+        $arguments[] = $this->repoPath;
+
+        return $this->run('clone', $arguments);
     }
 
     /**
      * Runs a `git clone` call to clone a remote repository
      * into the current repository
      *
-     * @param   string $remote reference path
+     * @param string $remote Remote repository that will be cloned into this repository
+     * @param bool   $bare Make a bare Git repository. (--bare)
      *
-     * @return  string
+     * @return  string Returns the command output
      */
-    public function cloneRemote($remote) {
-        return $this->run("clone $remote " . $this->repoPath);
+    public function cloneRemote(string $remote, bool $bare = false):string {
+        $arguments = [];
+        if ($bare) {
+            $arguments[] = '--bare';
+        }
+        $arguments[] = $this->repoPath;
+
+        return $this->run('clone', $arguments);
     }
 
     /**
      * Runs a `git clean` call
      *
-     * @param bool $deleteDirs Delete directories?
-     * @param bool $force Force clean?
+     * @param bool $deleteDirs Remove untracked directories in addition to untracked files. If an untracked directory
+     *     is managed by a different Git repository, it is not removed (-d)
+     * @param bool $force If the Git configuration variable clean.requireForce is not set to false, git clean will
+     *     refuse to delete files or directories unless given this option. (--force)
+     * @param bool $test Don’t actually remove anything, just show what would be done. (--dry-run)
      *
-     * @return  string
+     * @return string Returns the command output
      */
-    public function clean($deleteDirs = false, $force = false) {
-        return $this->run("clean" . (($force) ? " -f" : "") . (($deleteDirs) ? " -d" : ""));
+    public function clean(bool $deleteDirs = false, bool $force = false, bool $test = false):string {
+        $arguments = [];
+        if ($deleteDirs) {
+            $arguments[] = '-d';
+        }
+        if ($force) {
+            $arguments[] = '--force';
+        }
+        if ($test) {
+            $arguments[] = '--dry-run';
+        }
+
+        return $this->run('clean', $arguments);
     }
 
     /**
@@ -387,33 +526,46 @@ class Git {
      *
      * @param string $branch branch name
      *
-     * @return string
+     * @return string Returns the command output
      */
-    public function createBranch($branch) {
-        return $this->run("branch $branch");
+    public function createBranch(string $branch):string {
+        return $this->run('branch', [
+            $branch
+        ]);
     }
 
     /**
      * Runs a `git branch -[d|D]` call
      *
      * @param string $branch Branch name
-     * @param bool   $force Force branch
+     * @param bool   $force Allow deleting the branch irrespective of its merged status. (--force)
+     * @param bool   $remotes Delete the remote-tracking branches.
      *
-     * @return string
+     * @return string Returns the command output
      */
-    public function deleteBranch($branch, $force = false) {
-        return $this->run("branch " . (($force) ? '-D' : '-d') . " $branch");
+    public function deleteBranch(string $branch, bool $force = false, bool $remotes = false):string {
+        $arguments = [];
+        if ($force) {
+            $arguments[] = '-D';
+        } else {
+            $arguments[] = '-d';
+        }
+        if ($remotes) {
+            $arguments[] = '-r';
+        }
+
+        return $this->run('branch', $arguments);
     }
 
     /**
      * Runs a `git branch` call
      *
-     * @param   bool $keepAsterisk Keep asterisk mark on active branch
+     * @param bool $keepAsterisk Keep asterisk mark on active branch
      *
-     * @return  array
+     * @return array Returns the list of local branches
      */
-    public function listBranches($keepAsterisk = false) {
-        $branchArray = explode("\n", $this->run("branch"));
+    public function listBranches(bool $keepAsterisk = false):array {
+        $branchArray = explode("\n", $this->run('branch'));
         foreach ($branchArray as $i => &$branch) {
             $branch = trim($branch);
             if (!$keepAsterisk) {
@@ -432,10 +584,10 @@ class Git {
      *
      * Also strips out the HEAD reference (e.g. "origin/HEAD -> origin/master").
      *
-     * @return  array
+     * @return array Returns the list of remote branches
      */
-    public function listRemoteBranches() {
-        $branchArray = explode("\n", $this->run("branch -r"));
+    public function listRemoteBranches():array {
+        $branchArray = explode("\n", $this->run('branch', ['-r']));
         foreach ($branchArray as $i => &$branch) {
             $branch = trim($branch);
             if ($branch == "" || strpos($branch, 'HEAD -> ') !== false) {
@@ -451,9 +603,9 @@ class Git {
      *
      * @param bool $keepAsterisk Keep asterisk mark on branch name
      *
-     * @return string
+     * @return string Returns the name of the active branch
      */
-    public function activeBranch($keepAsterisk = false) {
+    public function activeBranch(bool $keepAsterisk = false):string {
         $branchArray  = $this->listBranches(true);
         $activeBranch = preg_grep("/^\*/", $branchArray);
         reset($activeBranch);
@@ -467,61 +619,98 @@ class Git {
     /**
      * Runs a `git checkout` call
      *
-     * @param string $branch branch name
+     * @param string $branch Branch name
+     * @param bool   $detach Prepare to work on top of <commit>, by detaching HEAD at it (see "DETACHED HEAD" section),
+     *     and updating the index and the files in the working tree. (--detach)
      *
-     * @return string
+     * @return string Returns the command output
      */
-    public function checkout($branch) {
-        return $this->run("checkout $branch");
+    public function checkout(string $branch, bool $detach = false):string {
+        $arguments = [];
+        if ($detach) {
+            $arguments[] = '--detach';
+        }
+        $arguments[] = $branch;
+
+        return $this->run('checkout', $arguments);
     }
 
 
     /**
      * Runs a `git merge` call
      *
-     * @param   string $branch branch to be merged
+     * @param string $branch Branch to be merged
+     * @param bool   $test Perform the merge but pretend the merge failed and do not autocommit (--no-commit)
      *
-     * @return  string
+     * @return string Returns the command output
      */
-    public function merge($branch) {
-        return $this->run("merge $branch --no-ff");
+    public function merge(string $branch, bool $test = false):string {
+        $arguments   = [];
+        $arguments[] = '--no-ff';
+        if ($test) {
+            $arguments[] = '--no-commit';
+        }
+        $arguments[] = $branch;
+
+        return $this->run('merge', $arguments);
     }
 
 
     /**
      * Runs a git fetch on the current branch
      *
-     * @return  string
+     * @return string Returns the command output
      */
-    public function fetch() {
-        return $this->run("fetch");
+    public function fetch():string {
+        $arguments = [];
+
+        return $this->run('fetch', $arguments);
     }
 
     /**
-     * Add a new tag on the current position
+     * Add a new annotated tag on the current position
      *
      * @param string $tag Tag name
      * @param string $message Optional message
+     * @param bool   $force Replace an existing tag with the given name (instead of failing) (--force)
+     * @param string $commit The object that the new tag will refer to, usually a commit. Defaults to HEAD.
      *
-     * @return string
+     * @return string Returns the command output
      */
-    public function addTag($tag, $message = null) {
+    public function addTag(string $tag, string $message = null, bool $force = false, $commit = null):string {
         if ($message === null) {
             $message = $tag;
         }
 
-        return $this->run("tag -a $tag -m " . escapeshellarg($message));
+        $arguments   = [];
+        $arguments[] = '--annotate';
+        $arguments[] = '--message=\'' . $message . '\'';
+        if ($force) {
+            $arguments[] = '--force';
+        }
+        $arguments[] = $tag;
+        if ($commit !== null) {
+            $arguments[] = $commit;
+        }
+
+        return $this->run('tag', $arguments);
     }
 
     /**
      * List all the available repository tags.
      *
-     * @param    string $pattern Shell wildcard pattern to match tags against.
+     * @param string $pattern Shell wildcard pattern to match tags against.
      *
-     * @return    array                Available repository tags.
+     * @return array Available repository tags.
      */
-    public function listTags($pattern = null) {
-        $tagArray = explode("\n", $this->run("tag -l $pattern"));
+    public function listTags(string $pattern = null):array {
+        $arguments   = [];
+        $arguments[] = '-l';
+        if ($pattern) {
+            $arguments[] = $pattern;
+        }
+
+        $tagArray = explode("\n", $this->run('tag', $arguments));
         foreach ($tagArray as $i => &$tag) {
             $tag = trim($tag);
             if ($tag == '') {
@@ -537,11 +726,29 @@ class Git {
      *
      * @param string $remote Name of remote branch
      * @param string $branch Name of local branch
+     * @param bool   $tags All refs under refs/tags are pushed, in addition to refspecs explicitly listed on the
+     *     command line. (--tags)
+     * @param bool   $test Do everything except actually send the updates. (--dry-run)
      *
-     * @return string
+     * @return string Returns the command output
      */
-    public function push($remote, $branch) {
-        return $this->run("push --tags $remote $branch");
+    public function push(string $remote = null, string $branch = null, bool $tags = false, bool $test = false):string {
+        $arguments = [];
+
+        if ($tags) {
+            $arguments[] = '--tags';
+        }
+        if ($test) {
+            $arguments[] = '--dry-run';
+        }
+        if ($remote !== null) {
+            $arguments[] = $remote;
+        }
+        if ($branch !== null) {
+            $arguments[] = $branch;
+        }
+
+        return $this->run('push', $arguments);
     }
 
     /**
@@ -549,11 +756,25 @@ class Git {
      *
      * @param string $remote Name of remote branch
      * @param string $branch Name of local branch
+     * @param bool   $test Perform the merge but pretend the merge failed and do not autocommit (--no-commit)
      *
-     * @return string
+     * @return string Returns the command output
      */
-    public function pull($remote, $branch) {
-        return $this->run("pull $remote $branch");
+    public function pull(string $remote = null, string $branch = null, bool $test = false):string {
+        $arguments = [];
+
+        $arguments[] = '--no-ff';
+        if ($test) {
+            $arguments[] = '--no-commit';
+        }
+        if ($remote !== null) {
+            $arguments[] = $remote;
+        }
+        if ($branch !== null) {
+            $arguments[] = $branch;
+        }
+
+        return $this->run('pull', $arguments);
     }
 
     /**
@@ -567,7 +788,7 @@ class Git {
         if ($format === null) {
             return $this->run('log');
         } else {
-            return $this->run('log --pretty=format:"' . $format . '"');
+            return $this->run('log', ['--pretty=format:"' . $format . '"']);
         }
     }
 
@@ -577,7 +798,7 @@ class Git {
      * @param string $description
      */
     public function setDescription($description) {
-        $path = $this->gitDirectoryPath();
+        $path = $this->getGitDirectoryPath();
         file_put_contents($path . "/description", $description);
     }
 
@@ -587,20 +808,20 @@ class Git {
      * @return string
      */
     public function getDescription() {
-        $path = $this->gitDirectoryPath();
+        $path = $this->getGitDirectoryPath();
 
         return file_get_contents($path . "/description");
     }
 
     /**
-     * Sets custom environment options for calling Git
+     * Sets custom environment options for calling Git.
      *
      * @param string $key Key for the environment variable
-     * @param string $value Value for the environment variable
+     * @param string $value Value for the environment variable. Use null to delete the variable.
      *
      */
-    public function setEnv($key, $value) {
-        $this->envOpts[$key] = $value;
+    public function setEnv(string $key, string $value) {
+        $this->processBuilder->setEnv($key, $value);
     }
 
 }

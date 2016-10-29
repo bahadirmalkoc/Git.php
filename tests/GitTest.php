@@ -10,7 +10,7 @@ use Symfony\Component\Filesystem\Filesystem;
 class GitTest extends TestCase {
 
 
-    const REMOTE_REPOSITORY = '';
+    const REMOTE_REPOSITORY = 'https://github.com/bahadirmalkoc/GitLib.git';
 
     const TEST_DESCRIPTION = 'Git test description';
 
@@ -28,17 +28,19 @@ class GitTest extends TestCase {
     /**
      * @var string
      */
-    private static $secondaryRepoDirectory;
-
-    /**
-     * @var string
-     */
     private static $bogusRepoDirectory;
 
     /**
      * @var Filesystem
      */
     private static $fs;
+
+    /**
+     * Directories to clean up
+     *
+     * @var array
+     */
+    private static $directories = [];
 
     /**
      *
@@ -51,10 +53,6 @@ class GitTest extends TestCase {
         static::$fs->remove($tempFolder);
         static::$repoDirectory = $tempFolder;
 
-        // Generate secondary git directory
-        $tempFolder2 = tempnam(sys_get_temp_dir(), 'git');
-        static::$fs->remove($tempFolder2);
-        static::$secondaryRepoDirectory = $tempFolder2;
 
         // Generate bogus git directory
         $tempFile                   = tempnam(sys_get_temp_dir(), 'git');
@@ -114,7 +112,11 @@ class GitTest extends TestCase {
      */
     public function testOpen(Git $repo) {
         unset($repo);
-        $repo = new Git(static::$repoDirectory);
+        $repo     = new Git(static::$repoDirectory);
+        $testFile = $repo->getRepoPath() . DIRECTORY_SEPARATOR . 'initial_commit_test.txt';
+        static::$fs->dumpFile($testFile, 'testContent');
+        $repo->add('initial_commit_test.txt');
+        $repo->commit('first commit');
 
         return $repo;
     }
@@ -130,14 +132,11 @@ class GitTest extends TestCase {
     }
 
     /**
-     * @depends testOpen
-     *
-     * @param Git $repo
+     * @dataProvider randomRepositoryProvider
      */
     public function testCloneRemote(Git $repo) {
         $repo->cloneRemote(static::REMOTE_REPOSITORY);
-
-
+        $this->assertFileExists($repo->getRepoPath() . DIRECTORY_SEPARATOR . 'phpunit.xml');
     }
 
     /**
@@ -152,27 +151,31 @@ class GitTest extends TestCase {
     }
 
     /**
-     * @depends testOpen
+     * @depends      testOpen
+     * @dataProvider randomRepositoryProvider
      *
      * @param Git $repo
+     * @param Git $secondaryRepo
      */
-    public function testCloneLocalTo(Git $repo) {
-        $repo->cloneTo(static::$secondaryRepoDirectory);
+    public function testCloneLocalTo(Git $repo, Git $secondaryRepo) {
+        static::$fs->remove($secondaryRepo->getRepoPath());
+        $repo->cloneTo($secondaryRepo->getRepoPath());
 
-        $secondaryRepo = new Git(static::$secondaryRepoDirectory);
-        $this->assertTrue($secondaryRepo->getDescription() === static::TEST_DESCRIPTION);
+        new Git($secondaryRepo->getRepoPath());
+        $this->assertFileExists($secondaryRepo->getRepoPath() . DIRECTORY_SEPARATOR . 'initial_commit_test.txt');
     }
 
     /**
-     * @depends testOpen
+     * @depends      testOpen
+     * @dataProvider randomRepositoryProvider
      *
      * @param Git $repo
+     * @param Git $secondaryRepo
      */
-    public function testCloneLocalFrom(Git $repo) {
-        $secondaryRepo = new Git(static::$secondaryRepoDirectory, true);
-        $secondaryRepo->cloneFrom($repo->gitDirectoryPath());
+    public function testCloneLocalFrom(Git $repo, Git $secondaryRepo) {
+        $secondaryRepo->cloneFrom($repo->getRepoPath());
 
-        $this->assertTrue($secondaryRepo->getDescription() === static::TEST_DESCRIPTION);
+        $this->assertFileExists($secondaryRepo->getRepoPath() . DIRECTORY_SEPARATOR . 'initial_commit_test.txt');
     }
 
     /**
@@ -287,21 +290,32 @@ class GitTest extends TestCase {
         $this->assertTrue(false, 'Test will be implemented later');
     }
 
-    protected function tearDown() {
-        static::$fs->remove(static::$secondaryRepoDirectory);
-    }
-
     public static function tearDownAfterClass() {
         try {
             static::$fs->remove([
                 static::$bogusRepoDirectory,
-                static::$secondaryRepoDirectory,
                 static::$repoDirectory
             ]);
         } catch (\Exception $e) {
             // ignore exceptions
         }
+
+        try {
+
+            static::$fs->remove(static::$directories);
+        } catch (\Exception $e) {
+        }
     }
 
+    public static function randomRepositoryProvider() {
+        // Generate secondary git directory
+        $tempFolder = tempnam(sys_get_temp_dir(), 'git');
+        $fs         = new Filesystem();
+        $fs->remove($tempFolder);
+
+        return [
+            [new Git($tempFolder, true)]
+        ];
+    }
 
 }
