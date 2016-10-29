@@ -197,31 +197,6 @@ class Git {
     }
 
     /**
-     * Tests if git is installed
-     *
-     * @access  public
-     * @return  bool
-     */
-    public function testGit() {
-        $descriptorspec = array(
-            1 => array('pipe', 'w'),
-            2 => array('pipe', 'w'),
-        );
-        $pipes          = array();
-        $resource       = proc_open(Git::getBin(), $descriptorspec, $pipes);
-
-        $stdout = stream_get_contents($pipes[1]);
-        $stderr = stream_get_contents($pipes[2]);
-        foreach ($pipes as $pipe) {
-            fclose($pipe);
-        }
-        $status = trim(proc_close($resource));
-        unset($stdout, $stderr);
-
-        return ($status != 127);
-    }
-
-    /**
      * Run a command in the git repository
      *
      * Accepts a shell command to run
