@@ -105,31 +105,6 @@ class GitTest extends TestCase {
     }
 
     /**
-     * Test created repo and other alternatives
-     *
-     * @param Git $repo
-     *
-     * @depends testCreate
-     */
-    public function testIsRepo(Git $repo) {
-        $this->assertTrue(Git::isRepo($repo));
-
-        $data = [
-            0,
-            new \stdClass(),
-            'test',
-            curl_init(),
-            1.25,
-            null,
-            []
-        ];
-
-        foreach ($data as $item) {
-            $this->assertFalse(Git::isRepo($item));
-        }
-    }
-
-    /**
      * Opens a repo
      *
      * @param Git $repo

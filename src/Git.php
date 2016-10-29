@@ -4,6 +4,8 @@ namespace Pub\Git;
 
 use InvalidArgumentException;
 use Pub\Git\GitException as Exception;
+use Symfony\Component\Process\ExecutableFinder;
+use Symfony\Component\Process\ProcessBuilder;
 
 // TODO: Add remove tag
 
@@ -22,7 +24,7 @@ class Git {
      *
      * @var string
      */
-    private static $bin = '/usr/bin/git';
+    private static $bin;
 
     /**
      * @var string
@@ -38,6 +40,11 @@ class Git {
      * @var array
      */
     private $envOpts = array();
+
+    /**
+     * @var ProcessBuilder
+     */
+    private $processBuilder;
 
 
     /**
@@ -57,10 +64,20 @@ class Git {
     }
 
     /**
-     * Sets up library for use in a default Windows environment
+     * Find git binary using executable finder.
+     * This is called by constructor once automatically, unless the binary is explicitly stated.
      */
-    public static function windowsMode() {
-        static::setBin('git');
+    public static function findBin() {
+        $executableFinder = new ExecutableFinder();
+
+        if (DIRECTORY_SEPARATOR === '\\') {
+            $default = 'git';
+            $executableFinder->setSuffixes(['']);
+        } else {
+            $default = '/usr/bin/git';
+        }
+
+        static::$bin = $executableFinder->find('git', $default);
     }
 
     /**
@@ -82,20 +99,7 @@ class Git {
     }
 
     /**
-     * Checks if a variable is an instance of GitRepo
-     *
-     * @param   mixed $var variable
-     *
-     * @return  bool
-     */
-    public static function isRepo($var) {
-        return is_object($var) && $var instanceof Git;
-    }
-
-    /**
-     * Constructor is private.
-     *
-     * Accepts a repository path
+     * Opens/creates a git repository. Also searches binary.
      *
      * @param   string $repoPath Repository path
      * @param   bool   $create Create directory and initiate it if not exists?
@@ -103,6 +107,13 @@ class Git {
      * @throws GitException When the given path is not a repository or cannot create a repository in the directory
      */
     public function __construct(string $repoPath, bool $create = false) {
+        if (!static::$bin) {
+            static::findBin();
+        }
+
+        $this->processBuilder = new ProcessBuilder();
+        $this->processBuilder->setPrefix(static::getBin());
+        
         $this->setRepoPath($repoPath, $create);
     }
 
@@ -159,7 +170,7 @@ class Git {
 
     /**
      * Returns the repository path
-     * 
+     *
      * @return string
      */
     public function getRepoPath(): string {
@@ -168,13 +179,13 @@ class Git {
 
     /**
      * Returns if the repository is bare or not
-     * 
+     *
      * @return boolean
      */
     public function isBare(): bool {
         return $this->bare;
     }
-    
+
     /**
      * Get the path to the git repo directory (eg. the ".git" directory)
      *
@@ -288,7 +299,7 @@ class Git {
         if ($excludeUntracked) {
             $untrackedString = ' -uno';
         }
-        
+
         return $this->run('status' . $untrackedString);
     }
 
@@ -617,9 +628,4 @@ class Git {
         $this->envOpts[$key] = $value;
     }
 
-}
-
-// Use windows mode if detected
-if (DIRECTORY_SEPARATOR === '\\') {
-    Git::windowsMode();
 }
