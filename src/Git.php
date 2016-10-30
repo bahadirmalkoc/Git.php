@@ -10,8 +10,6 @@ use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\ProcessBuilder;
 use Symfony\Component\Process\ProcessUtils;
 
-// TODO: Add remove tag
-// TODO: Make an addAll command
 // TODO: Add remote
 
 /**
@@ -355,6 +353,7 @@ class Git {
      * Runs a `git add` call
      *
      * @param array|string $files Files to add. If you want to specify more than one `pathspec`, use the array format.
+     *     If it is '*' (--all) option will be used instead
      * @param bool         $verbose Verbose command (--verbose)
      * @param bool         $force Allow adding otherwise ignored files. (--force)
      * @param bool         $test Don't actually add the file(s), just show if they exist and/or will be ignored.
@@ -377,7 +376,11 @@ class Git {
         if (is_array($files)) {
             $arguments = array_merge($arguments, $files);
         } else if (is_string($files)) {
-            $arguments[] = $files;
+            if ($files === '*') {
+                $arguments[] = '--all';
+            } else {
+                $arguments[] = $files;
+            }
         } else {
             throw new InvalidArgumentException(sprintf('Expecting array or string, found %s', gettype($files)));
         }
