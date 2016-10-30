@@ -132,11 +132,26 @@ class GitTest extends TestCase {
     }
 
     /**
-     * @dataProvider randomRepositoryProvider
+     * @dataProvider randomPathProvider
+     *
+     * @param string $repoPath
      */
-    public function testCloneRemote(Git $repo) {
-        $repo->cloneRemote(static::REMOTE_REPOSITORY);
+    public function testCloneRemote(string $repoPath) {
+        $repo = new Git($repoPath, true, static::REMOTE_REPOSITORY);
         $this->assertFileExists($repo->getRepoPath() . DIRECTORY_SEPARATOR . 'phpunit.xml');
+
+        $remoteBranches = $repo->listRemoteBranches();
+        $this->assertNotEmpty($remoteBranches);
+    }
+
+    /**
+     * @dataProvider randomPathProvider
+     *
+     * @param string $repoPath
+     */
+    public function testCloneRemoteBare(string $repoPath) {
+        $repo = new Git($repoPath, true, static::REMOTE_REPOSITORY, true);
+        $this->assertFileExists($repo->getRepoPath() . DIRECTORY_SEPARATOR . 'config');
     }
 
     /**
@@ -152,29 +167,15 @@ class GitTest extends TestCase {
 
     /**
      * @depends      testOpen
-     * @dataProvider randomRepositoryProvider
+     * @dataProvider randomPathProvider
      *
-     * @param Git $repo
-     * @param Git $secondaryRepo
+     * @param Git    $repo
+     * @param string $repoPath
      */
-    public function testCloneLocalTo(Git $repo, Git $secondaryRepo) {
-        static::$fs->remove($secondaryRepo->getRepoPath());
-        $repo->cloneTo($secondaryRepo->getRepoPath());
+    public function testCloneLocalTo(string $repoPath, Git $repo) {
+        $repo->cloneTo($repoPath);
 
-        new Git($secondaryRepo->getRepoPath());
-        $this->assertFileExists($secondaryRepo->getRepoPath() . DIRECTORY_SEPARATOR . 'initial_commit_test.txt');
-    }
-
-    /**
-     * @depends      testOpen
-     * @dataProvider randomRepositoryProvider
-     *
-     * @param Git $repo
-     * @param Git $secondaryRepo
-     */
-    public function testCloneLocalFrom(Git $repo, Git $secondaryRepo) {
-        $secondaryRepo->cloneFrom($repo->getRepoPath());
-
+        $secondaryRepo = new Git($repoPath);
         $this->assertFileExists($secondaryRepo->getRepoPath() . DIRECTORY_SEPARATOR . 'initial_commit_test.txt');
     }
 
@@ -187,6 +188,7 @@ class GitTest extends TestCase {
         $testFile = $repo->getRepoPath() . DIRECTORY_SEPARATOR . static::TEST_FILENAME;
         static::$fs->dumpFile($testFile, 'testContent');
         $repo->add(static::TEST_FILENAME);
+        
 
         $this->assertContains(static::TEST_FILENAME, $repo->status(true));
     }
@@ -198,6 +200,7 @@ class GitTest extends TestCase {
      */
     public function testRemove(Git $repo) {
         $repo->rm(static::TEST_FILENAME, true);
+        $repo->commit('test removal commit');
 
         $this->assertNotContains(static::TEST_FILENAME, $repo->status(true));
     }
@@ -215,25 +218,26 @@ class GitTest extends TestCase {
     }
 
     /**
-     * Tests following: createBranch, deleteBranch, listBranches, checkout, getActiveBranch, merge
+     * Tests following: createBranch, deleteBranch, listBranches, checkout, getActiveBranch, merge, deleteBranch
      *
-     * @depends testOpen
+     * @depends      testOpen
+     * @dataProvider randomPathProvider
      *
-     * @param Git $repo
-     *
-     * @return Git
+     * @param string $file
+     * @param Git    $repo
      */
-    public function testBranches(Git $repo) {
+    public function testBranches(string $file, Git $repo) {
         $testBranch = static::TEST_BRANCH;
         $repo->createBranch($testBranch);
         $this->assertContains($testBranch, $repo->listBranches());
+        $repo->checkout($testBranch);
 
-        $testFile = $repo->getRepoPath() . DIRECTORY_SEPARATOR . static::TEST_FILENAME;
+        $fileName = basename($file);
+        $testFile = $repo->getRepoPath() . DIRECTORY_SEPARATOR . $fileName;
         static::$fs->dumpFile($testFile, 'testContent');
-        $repo->add(static::TEST_FILENAME);
+        $repo->add($fileName);
         $repo->commit('some commit message');
 
-        $repo->checkout($testBranch);
         $activeBranch = $repo->activeBranch();
         $this->assertTrue($activeBranch === $testBranch, "'$activeBranch' is not equal to '$testBranch'");
 
@@ -241,24 +245,15 @@ class GitTest extends TestCase {
         $this->assertFileNotExists($testFile);
 
         $repo->merge($testBranch);
-
+        
+        $activeBranch = $repo->activeBranch();
         $this->assertTrue($activeBranch === 'master', "'$activeBranch' is not equal to 'master'");
         $this->assertFileExists($testFile);
 
-        return $repo;
-    }
-
-    /**
-     * Tests deleting a branch
-     *
-     * @param Git $repo
-     *
-     * @depends testBranches
-     */
-    public function testDeleteBranch(Git $repo) {
         $repo->deleteBranch(static::TEST_BRANCH);
         $this->assertArrayNotHasKey(static::TEST_BRANCH, $repo->listBranches());
     }
+
 
     /**
      * Tests adding tags
@@ -282,10 +277,6 @@ class GitTest extends TestCase {
         $this->assertTrue(false, 'Test will be implemented later');
     }
 
-    public function testListRemoteBranches() {
-        $this->assertTrue(false, 'Test will be implemented later');
-    }
-
     public function testLog() {
         $this->assertTrue(false, 'Test will be implemented later');
     }
@@ -300,21 +291,24 @@ class GitTest extends TestCase {
             // ignore exceptions
         }
 
-        try {
+        foreach (static::$directories as $directory) {
+            try {
 
-            static::$fs->remove(static::$directories);
-        } catch (\Exception $e) {
+                static::$fs->remove($directory);
+            } catch (\Exception $e) {
+            }
         }
     }
 
-    public static function randomRepositoryProvider() {
+    public static function randomPathProvider() {
         // Generate secondary git directory
         $tempFolder = tempnam(sys_get_temp_dir(), 'git');
         $fs         = new Filesystem();
         $fs->remove($tempFolder);
+        static::$directories[] = $tempFolder;
 
         return [
-            [new Git($tempFolder, true)]
+            [$tempFolder]
         ];
     }
 

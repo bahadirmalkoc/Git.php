@@ -47,11 +47,6 @@ class Git {
     private $timeout;
 
     /**
-     * @var array
-     */
-    private $envOpts = array();
-
-    /**
      * @var ProcessBuilder
      */
     private $processBuilder;
@@ -60,6 +55,11 @@ class Git {
      * @var bool
      */
     private $gracefulFail = true;
+
+    /**
+     * @var string
+     */
+    private $lastStdError = '';
 
 
     /**
@@ -101,11 +101,12 @@ class Git {
      *
      * @param string $repoPath Repository path
      * @param string $remote Remote repository
+     * @param bool   $bare Make a bare Git repository. (--bare)
      *
      * @return Git
      * @throws GitException In case of a git error
      */
-    public static function cloneRepository(string $repoPath, string $remote):Git {
+    public static function cloneRepository(string $repoPath, string $remote, bool $bare = false):Git {
         $repo = new static($repoPath, true);
 
         $repo->cloneRemote($remote);
@@ -118,11 +119,10 @@ class Git {
      *
      * @param string $repoPath Repository path
      * @param bool   $create Create directory and initiate it if not exists?
-     * @param int    $timeout Timeout in seconds of a git process, or null to disable
-     *
-     * @throws GitException When the given path is not a repository or cannot create a repository in the directory
+     * @param string $remote If given, repository will be created with the given remote. Indicates create=true.
+     * @param bool   $bare Make the cloned bare repository bare.
      */
-    public function __construct(string $repoPath, bool $create = false, int $timeout = null) {
+    public function __construct(string $repoPath, bool $create = false, string $remote = null, bool $bare = false) {
         if (!static::$bin) {
             static::findBin();
         }
@@ -131,11 +131,12 @@ class Git {
         $this->processBuilder->setPrefix(static::getBin());
         $this->processBuilder->inheritEnvironmentVariables();
         $this->processBuilder->setWorkingDirectory($repoPath);
-        if ($timeout !== null) {
-            $this->setTimeout($timeout);
+
+        if ($remote !== null) {
+            $create = true;
         }
 
-        $this->setRepoPath($repoPath, $create);
+        $this->setRepoPath($repoPath, $create, $remote, $bare);
     }
 
     /**
@@ -143,30 +144,37 @@ class Git {
      *
      * Accepts the repository path
      *
-     * @param   string $repoPath Repository path
-     * @param   bool   $createNew Create directory and initiate it if not exists?
+     * @param string $repoPath Repository path
+     * @param bool   $create Create directory and initiate it if not exists?
+     * @param string $remote If given, repository will be created with the given remote. Indicates create=true.
+     * @param bool   $bare Make the cloned bare repository bare.
      *
      * @throws GitException When the given path is not a repository or cannot create a repository in the directory
      */
-    private function setRepoPath(string $repoPath, bool $createNew = false) {
+    protected function setRepoPath(string $repoPath, bool $create, string $remote = null, bool $bare = false) {
         if ($newPath = realpath($repoPath)) {
             $repoPath = $newPath;
             if (is_dir($repoPath)) {
                 // Is this a work tree?
-                if (file_exists($repoPath . "/.git") && is_dir($repoPath . "/.git")) {
+                if (file_exists($repoPath . '/.git') && is_dir($repoPath . '/.git')) {
                     $this->repoPath = $repoPath;
                     $this->bare     = false;
                     // Is this a bare repo?
-                } else if (is_file($repoPath . "/config")) {
-                    $parse_ini = parse_ini_file($repoPath . "/config");
+                } else if (is_file($repoPath . '/config')) {
+                    $parse_ini = parse_ini_file($repoPath . '/config');
                     if ($parse_ini['bare']) {
                         $this->repoPath = $repoPath;
                         $this->bare     = true;
                     }
                 } else {
-                    if ($createNew) {
+                    if ($create) {
                         $this->repoPath = $repoPath;
-                        $this->run('init');
+                        if ($remote) {
+                            $this->bare = $bare;
+                            $this->cloneRemote($remote, $bare);
+                        } else {
+                            $this->run('init');
+                        }
                     } else {
                         throw new Exception('"' . $repoPath . '" is not a git repository');
                     }
@@ -175,11 +183,16 @@ class Git {
                 throw new Exception('"' . $repoPath . '" is not a directory');
             }
         } else {
-            if ($createNew) {
+            if ($create) {
                 if ($parent = realpath(dirname($repoPath))) {
                     mkdir($repoPath);
                     $this->repoPath = $repoPath;
-                    $this->run('init');
+                    if ($remote) {
+                        $this->bare = $bare;
+                        $this->cloneRemote($remote, $bare);
+                    } else {
+                        $this->run('init');
+                    }
                 } else {
                     throw new Exception('cannot create repository in non-existent directory');
                 }
@@ -196,6 +209,16 @@ class Git {
      */
     public function getRepoPath(): string {
         return $this->repoPath;
+    }
+
+    /**
+     * Returns the last stdError message after running a git command. Useful if the git command returns messages with
+     * stdError. An example is the clone command parsing progress to stdError.
+     *
+     * @return string
+     */
+    public function getLastStdError(): string {
+        return $this->lastStdError;
     }
 
     /**
@@ -266,6 +289,7 @@ class Git {
      * @throws GitProcessException When a git process is failed to be started
      */
     protected function runCommand(array $arguments):string {
+        $this->lastStdError = '';
         $this->processBuilder->setArguments($arguments);
         $process = $this->processBuilder->getProcess();
         try {
@@ -274,11 +298,11 @@ class Git {
             throw new ProcessException($e->getMessage(), $e->getCode(), $e);
         }
 
+        $stdErr = $this->lastStdError = $process->getErrorOutput();
         if ($process->isSuccessful()) {
             return $process->getOutput();
         }
 
-        $stdErr = $process->getErrorOutput();
         if ($this->isGracefulFail()) {
             $stdOut = $process->getOutput();
 
@@ -288,7 +312,6 @@ class Git {
                 return $stdOut;
             }
         }
-
 
         throw new GitException($stdErr, $process->getExitCode());
     }
@@ -322,7 +345,7 @@ class Git {
     public function status($excludeUntracked = false):string {
         $arguments = [];
         if ($excludeUntracked) {
-            $arguments[] = ' -uno';
+            $arguments[] = '-uno';
         }
 
         return $this->run('status', $arguments);
@@ -385,8 +408,8 @@ class Git {
         if ($force) {
             $arguments[] = '--force';
         }
-        if ($verbose) {
-            $arguments[] = '--quite';
+        if (!$verbose) {
+            $arguments[] = '--quiet';
         }
         if ($test) {
             $arguments[] = '--dry-run';
@@ -456,40 +479,25 @@ class Git {
     }
 
     /**
-     * Runs a `git clone` call to clone a different local repository
-     * into the current repository
-     *
-     * @param string $source Source directory that will be cloned in to the current repository
-     * @param bool   $bare Make a bare Git repository. (--bare)
-     *
-     * @return  string Returns the command output
-     */
-    public function cloneFrom(string $source, bool $bare = false):string {
-        $arguments   = [];
-        $arguments[] = '--local';
-        if ($bare) {
-            $arguments[] = '--bare';
-        }
-        $arguments[] = $source;
-        $arguments[] = $this->repoPath;
-
-        return $this->run('clone', $arguments);
-    }
-
-    /**
      * Runs a `git clone` call to clone a remote repository
      * into the current repository
      *
      * @param string $remote Remote repository that will be cloned into this repository
      * @param bool   $bare Make a bare Git repository. (--bare)
+     * @param bool   $verbose Run verbosely. Does not affect the reporting of progress status to the standard error
+     *     stream. (--verbose)
      *
-     * @return  string Returns the command output
+     * @return string Returns the command output
      */
-    public function cloneRemote(string $remote, bool $bare = false):string {
+    protected function cloneRemote(string $remote, bool $bare = false, bool $verbose = true):string {
         $arguments = [];
         if ($bare) {
             $arguments[] = '--bare';
         }
+        if ($verbose) {
+            $arguments[] = '--verbose';
+        }
+        $arguments[] = $remote;
         $arguments[] = $this->repoPath;
 
         return $this->run('clone', $arguments);
@@ -554,6 +562,8 @@ class Git {
             $arguments[] = '-r';
         }
 
+        $arguments[] = $branch;
+        
         return $this->run('branch', $arguments);
     }
 
