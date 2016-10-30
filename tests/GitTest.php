@@ -253,12 +253,9 @@ class GitTest extends TestCase {
         $repo->deleteBranch(static::TEST_BRANCH);
         $this->assertArrayNotHasKey(static::TEST_BRANCH, $repo->listBranches());
     }
-
-
+    
     /**
      * Tests adding tags
-     *
-     * TODO: Test delete tag
      *
      * @param Git $repo
      *
@@ -267,6 +264,9 @@ class GitTest extends TestCase {
     public function testTags(Git $repo) {
         $repo->addTag(static::TEST_TAG);
         $this->assertContains(static::TEST_TAG, $repo->listTags());
+
+        $repo->deleteTag(static::TEST_TAG);
+        $this->assertNotContains(static::TEST_TAG, $repo->listTags());
     }
 
     public function testPull() {

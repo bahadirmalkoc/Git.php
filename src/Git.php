@@ -563,7 +563,7 @@ class Git {
         }
 
         $arguments[] = $branch;
-        
+
         return $this->run('branch', $arguments);
     }
 
@@ -702,6 +702,22 @@ class Git {
         if ($commit !== null) {
             $arguments[] = $commit;
         }
+
+        return $this->run('tag', $arguments);
+    }
+
+    /**
+     * Deletes tag with given name
+     *
+     * @param string $tag Tag name
+     *
+     * @return string Returns the command output
+     */
+    public function deleteTag($tag) {
+
+        $arguments   = [];
+        $arguments[] = '--delete';
+        $arguments[] = $tag;
 
         return $this->run('tag', $arguments);
     }
