@@ -5,12 +5,10 @@ namespace Pub\Git;
 use InvalidArgumentException;
 use Pub\Git\GitException as Exception;
 use Pub\Git\GitProcessException as ProcessException;
+use Pub\Git\GitParseException as ParseException;
 use Symfony\Component\Process\Exception\RuntimeException;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\ProcessBuilder;
-use Symfony\Component\Process\ProcessUtils;
-
-// TODO: Add remote
 
 /**
  * Git Interface Class
@@ -105,11 +103,7 @@ class Git {
      * @throws GitException In case of a git error
      */
     public static function cloneRepository(string $repoPath, string $remote, bool $bare = false):Git {
-        $repo = new static($repoPath, true);
-
-        $repo->cloneRemote($remote);
-
-        return $repo;
+        return new static($repoPath, true, $remote, $bare);
     }
 
     /**
@@ -393,7 +387,7 @@ class Git {
      *
      * @param array|string $files Files to remove. If you want to specify more than one `pathspec`, use the array
      *     format.
-     * @param bool         $cached Use this option to unstage and remove paths only from the index. Working tree files,
+     * @param bool         $cached Use this option to un-stage and remove paths only from the index. Working tree files,
      *     whether modified or not, will be left alone. (--cached)
      * @param bool         $force Override the up-to-date check. (--force)
      * @param bool         $verbose Normally outputs one line (in the form of an rm command) for each file removed.
@@ -403,7 +397,7 @@ class Git {
      *
      * @return string Returns the command output
      */
-    public function rm($files = "*", bool $cached = false, bool $force = false, bool $verbose = true, bool $test = false):string {
+    public function rm($files, bool $cached = false, bool $force = false, bool $verbose = true, bool $test = false):string {
         $arguments = [];
         if ($cached) {
             $arguments[] = '--cached';
@@ -513,14 +507,18 @@ class Git {
      *     is managed by a different Git repository, it is not removed (-d)
      * @param bool $force If the Git configuration variable clean.requireForce is not set to false, git clean will
      *     refuse to delete files or directories unless given this option. (--force)
+     * @param bool $removeIgnored Remove also the ignored files (-x)
      * @param bool $test Don’t actually remove anything, just show what would be done. (--dry-run)
      *
      * @return string Returns the command output
      */
-    public function clean(bool $deleteDirs = false, bool $force = false, bool $test = false):string {
+    public function clean(bool $deleteDirs = false, bool $force = false, bool $removeIgnored = false, bool $test = false):string {
         $arguments = [];
         if ($deleteDirs) {
             $arguments[] = '-d';
+        }
+        if ($removeIgnored) {
+            $arguments[] = '-x';
         }
         if ($force) {
             $arguments[] = '--force';
@@ -755,13 +753,15 @@ class Git {
      *
      * @param string $remote Name of remote branch
      * @param string $branch Name of local branch
+     * @param bool   $setUpstream Set the given branch as upstream. The branch and remote name should have been given
+     *     for this to work.
      * @param bool   $tags All refs under refs/tags are pushed, in addition to refspecs explicitly listed on the
      *     command line. (--tags)
      * @param bool   $test Do everything except actually send the updates. (--dry-run)
      *
      * @return string Returns the command output
      */
-    public function push(string $remote = null, string $branch = null, bool $tags = false, bool $test = false):string {
+    public function push(string $remote = null, string $branch = null, bool $setUpstream = false, bool $tags = false, bool $test = false):string {
         $arguments = [];
 
         if ($tags) {
@@ -772,9 +772,13 @@ class Git {
         }
         if ($remote !== null) {
             $arguments[] = $remote;
-        }
-        if ($branch !== null) {
-            $arguments[] = $branch;
+            if ($branch !== null) {
+                $arguments[] = $branch;
+
+                if ($setUpstream) {
+                    $arguments[] = '--set-upstream';
+                }
+            }
         }
 
         return $this->run('push', $arguments);
@@ -798,9 +802,9 @@ class Git {
         }
         if ($remote !== null) {
             $arguments[] = $remote;
-        }
-        if ($branch !== null) {
-            $arguments[] = $branch;
+            if ($branch !== null) {
+                $arguments[] = $branch;
+            }
         }
 
         return $this->run('pull', $arguments);
@@ -819,6 +823,131 @@ class Git {
         } else {
             return $this->run('log', ['--pretty=format:"' . $format . '"']);
         }
+    }
+
+    /**
+     * List the remotes
+     *
+     * @return GitRemote[] Returns an array with remotes.
+     * @throws GitParseException When parsing fails for any reason
+     */
+    public function listRemotes():array {
+        $output = $this->run('remote', ['-v']);
+
+        return $this->parseRemotesOutput($output);
+    }
+
+    /**
+     * Parses the remotes command output
+     *
+     * @param string $output
+     *
+     * @return GitRemote[]
+     * @throws GitParseException When parsing fails
+     */
+    private function parseRemotesOutput(string $output) {
+        $remotes = [];
+        $listing = explode("\n", $output);
+        foreach ($listing as $line) {
+            $line = trim($line);
+            if (!$line) {
+                continue;
+            }
+
+            $line      = str_replace("\t", ' ', $line);
+            $splitLine = explode(' ', $line);
+            $parses    = [];
+            foreach ($splitLine as $item) {
+                if (!$item) {
+                    continue;
+                }
+
+                $parses[] = $item;
+            }
+            unset($item);
+
+            $start = 0;
+            $end   = count($parses) - 1;
+
+            if ($end < 2) {
+                throw new ParseException(sprintf('Parsing the line "%s" is failed', $line));
+            }
+
+            $name = '';
+            $url  = '';
+            $type = '';
+
+            foreach ($parses as $key => $item) {
+                if ($key === $start) {
+                    $name = $item;
+                } else if ($key === $end) {
+                    $type = $item;
+                } else {
+                    $url .= ($url ? ' ' : '') . $item;
+                }
+            }
+
+            $push  = strpos($type, 'push') !== false;
+            $fetch = strpos($type, 'fetch') !== false;
+            $key   = $name . '_' . $url;
+
+            /** @var GitRemote $remote */
+            if (isset($remotes[$key])) {
+                $remote = $remotes[$key];
+                if ($push) {
+                    if ($remote->isFetch()) {
+                        $remote->setType(GitRemote::PUSH_FETCH);
+                    } else {
+                        $remote->setType(GitRemote::PUSH);
+                    }
+                }
+                if ($fetch) {
+                    if ($remote->isPush()) {
+                        $remote->setType(GitRemote::PUSH_FETCH);
+                    } else {
+                        $remote->setType(GitRemote::FETCH);
+                    }
+                }
+            } else {
+                $remote        = new GitRemote($url, $name, $push, $fetch);
+                $remotes[$key] = $remote;
+            }
+        }
+
+        return array_values($remotes);
+    }
+
+    /**
+     * Add a remote to the repo.
+     *
+     * **This method does not alter push/fetch type**
+     *
+     * @param GitRemote $remote Remote repository object
+     *
+     * @return string Output of the git command
+     */
+    public function addRemote(GitRemote $remote):string {
+        $arguments   = [];
+        $arguments[] = 'add';
+        $arguments[] = $remote->getName();
+        $arguments[] = $remote->getUrl();
+
+        return $this->run('remote', $arguments);
+    }
+
+    /**
+     * Delete a remote with given name
+     *
+     * @param string $name Name of the remote repository
+     *
+     * @return string Output of the git command
+     */
+    public function deleteRemote($name):string {
+        $arguments   = [];
+        $arguments[] = 'remove';
+        $arguments[] = $name;
+
+        return $this->run('remote', $arguments);
     }
 
     /**
